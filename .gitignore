@@ -13,3 +13,8 @@ venv/
 
 # Tool output
 findings.json
+
+# Claude Code
+.claude/
+.claude.json
+CLAUDE.md
