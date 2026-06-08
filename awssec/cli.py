@@ -22,7 +22,15 @@ from .core.session import build_context
 from .modules import MODULES
 
 
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Define and parse the command-line flags.
+
+    ``argv`` is accepted (instead of always reading ``sys.argv``) so the
+    parser can be exercised directly from tests.
+    """
     parser = argparse.ArgumentParser(
         prog="awssec",
         description="Read-only scanner for common AWS security misconfigurations "
@@ -48,9 +56,20 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
+    """Run the scan and return a process exit code.
+
+    Flow: parse args -> build an AWS session -> run each selected module ->
+    render the collected findings -> compute the exit code.
+    """
     args = _parse_args(argv)
 
+    # Establish one AWS session up front (shared by every module). Any
+    # credential/permission problem here is fatal and reported clearly, since
+    # without a session there is nothing to scan.
     try:
         ctx = build_context(profile=args.profile, region=args.region)
     except (NoCredentialsError, ClientError, BotoCoreError) as err:
@@ -60,13 +79,16 @@ def main(argv: list[str] | None = None) -> int:
             "the AWS-managed SecurityAudit policy.",
             file=sys.stderr,
         )
-        return 2
+        return 2  # distinct from the --fail-on exit code (1) so CI can tell them apart
 
+    # Run the requested modules (default: all). Each returns a list of Findings;
+    # we simply concatenate them into one flat list for reporting.
     selected = args.module or list(MODULES)
     findings = []
     for name in selected:
         findings.extend(MODULES[name].run(ctx))
 
+    # Context echoed in both output formats so a saved report is self-describing.
     metadata = {
         "tool": "awssec",
         "version": __version__,
@@ -76,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         "modules": selected,
     }
 
+    # Two output modes; both consume the exact same findings list.
     reporter = Reporter(no_color=args.no_color)
     if args.json:
         print(reporter.to_json(findings, metadata))
@@ -86,10 +109,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _exit_code(findings, fail_on: str | None) -> int:
-    """0 normally; 1 if --fail-on threshold met by any FAIL finding."""
+    """Translate findings into an exit code for CI gating.
+
+    Returns 0 normally. With ``--fail-on SEV`` set, returns 1 if any FAIL
+    finding is at least that severity (e.g. ``--fail-on HIGH`` fails the build
+    on HIGH or CRITICAL findings, but not MEDIUM/LOW).
+    """
     if not fail_on:
         return 0
-    threshold = Severity[fail_on]
+    threshold = Severity[fail_on]  # name -> enum member; ordered so >= works
     worst = [
         f for f in findings if f.status is Status.FAIL and f.severity >= threshold
     ]

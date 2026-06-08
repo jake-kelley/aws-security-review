@@ -77,6 +77,15 @@ def run(ctx: ScanContext) -> list[Finding]:
 
 
 class _IamScanner:
+    """Runs all IAM checks for one account and accumulates Findings.
+
+    The pattern is "gather shared data once, then run many cheap checks over
+    it": the credential report is fetched a single time and reused by three
+    checks, and all policy documents are collected once and reused by the
+    three pattern-matching checks. Findings accumulate in ``self.findings``
+    via :meth:`_add`.
+    """
+
     def __init__(self, ctx: ScanContext):
         self.ctx = ctx
         self.iam = ctx.client("iam")
@@ -84,21 +93,27 @@ class _IamScanner:
 
     # ---- orchestration -------------------------------------------------
     def scan(self) -> list[Finding]:
+        """Run every check and return the collected findings."""
+        # Group 1: checks driven by the single IAM credential report.
         report = self._load_credential_report()
         self._check_root_account(report)
         self._check_access_key_age(report)
         self._check_password_only_users(report)
 
+        # Group 2: checks driven by scanning policy documents for bad patterns.
         identity_policies = self._collect_identity_policies()
         self._check_broad_permissions(identity_policies)
         self._check_passrole(identity_policies)
         self._check_guardduty_tampering(identity_policies)
 
+        # Trust policies live on the roles themselves, so this check reads roles
+        # directly rather than going through the collected identity policies.
         self._check_trust_policy_wildcard()
         return self.findings
 
     # ---- helpers -------------------------------------------------------
     def _add(self, **kwargs) -> None:
+        """Append a Finding, stamping the service so callers don't repeat it."""
         self.findings.append(Finding(service=SERVICE, **kwargs))
 
     def _error(self, check_id: str, what: str, err: ClientError) -> None:
@@ -134,6 +149,11 @@ class _IamScanner:
         Returns a list of row dicts, or None if it could not be retrieved.
         """
         try:
+            # generate_credential_report is asynchronous: it kicks off (or
+            # returns a cached) report and reports COMPLETE when ready. We poll
+            # up to ~30s. AWS caches the report for 4 hours, so this is usually
+            # instant on repeat runs. This "generate" call does not modify the
+            # account — it only compiles a read-only report about credentials.
             for _ in range(15):
                 state = self.iam.generate_credential_report()["State"]
                 if state == "COMPLETE":
@@ -143,6 +163,7 @@ class _IamScanner:
         except ClientError as err:
             self._error("iam_credential_report", "the IAM credential report", err)
             return None
+        # The report is a CSV (as bytes); one row per principal, keyed by column.
         rows = list(csv.DictReader(io.StringIO(content.decode("utf-8"))))
         return rows
 
@@ -154,9 +175,12 @@ class _IamScanner:
         return docs
 
     def _collect_customer_managed(self) -> list[_PolicyDoc]:
+        """Fetch the default version document of each customer-managed policy."""
         docs: list[_PolicyDoc] = []
         try:
             paginator = self.iam.get_paginator("list_policies")
+            # Scope="Local" = customer-managed only (skip the hundreds of
+            # AWS-managed policies, which we don't audit line-by-line).
             for page in paginator.paginate(Scope="Local"):
                 for p in page["Policies"]:
                     version = self.iam.get_policy_version(
@@ -176,6 +200,13 @@ class _IamScanner:
         return docs
 
     def _collect_inline_policies(self) -> list[_PolicyDoc]:
+        """Fetch every inline policy on every user, role, and group.
+
+        Users/roles/groups follow the same three-step shape (list principals ->
+        list their inline policy names -> get each document), so the per-kind
+        API names are kept in a table and driven by one loop rather than
+        copy-pasting the logic three times.
+        """
         docs: list[_PolicyDoc] = []
         # (list_call, response_key, list_inline_call, get_call, id_key, label)
         kinds = [
@@ -206,6 +237,12 @@ class _IamScanner:
 
     # ---- checks --------------------------------------------------------
     def _check_root_account(self, report: list[dict] | None) -> None:
+        """Checks 1: root MFA enabled, and no root access keys.
+
+        Uses get_account_summary (a cheap account-wide rollup) rather than the
+        credential report; both root checks always emit a PASS or FAIL so the
+        report shows they actually ran.
+        """
         try:
             summary = self.iam.get_account_summary()["SummaryMap"]
         except ClientError as err:
@@ -241,14 +278,20 @@ class _IamScanner:
         )
 
     def _check_access_key_age(self, report: list[dict] | None) -> None:
-        if report is None:
+        """Check 3: flag active access keys not rotated in > 90 days.
+
+        Each user can have up to two keys (columns ``access_key_1_*`` and
+        ``access_key_2_*``); we check both. "last_rotated" equals the creation
+        time for keys that were never rotated, which is exactly what we want.
+        """
+        if report is None:  # credential report unavailable (already reported)
             return
         for row in report:
             if row.get("user") == "<root_account>":
-                continue
+                continue  # root keys are covered by _check_root_account
             for idx in ("1", "2"):
                 if row.get(f"access_key_{idx}_active") != "true":
-                    continue
+                    continue  # skip inactive / non-existent key slots
                 rotated = self._parse_dt(row.get(f"access_key_{idx}_last_rotated", ""))
                 if rotated is None:
                     continue
@@ -266,11 +309,16 @@ class _IamScanner:
                     )
 
     def _check_password_only_users(self, report: list[dict] | None) -> None:
+        """Check 4: flag users who can sign in to the console without MFA.
+
+        "Password-only" = a console password is set but no MFA device is
+        active, so the password alone grants console access (CIS 1.10).
+        """
         if report is None:
             return
         for row in report:
             if row.get("user") == "<root_account>":
-                continue
+                continue  # root MFA is handled separately
             password_enabled = row.get("password_enabled") == "true"
             mfa_active = row.get("mfa_active") == "true"
             if password_enabled and not mfa_active:
@@ -287,6 +335,13 @@ class _IamScanner:
                 )
 
     def _check_broad_permissions(self, docs: list[_PolicyDoc]) -> None:
+        """Check 2: flag full-admin (Action:* on Resource:*) grants.
+
+        Two ways an identity ends up with full admin, so we look for both:
+        (2a) a custom/inline policy that itself allows ``*`` on ``*``, and
+        (2b) the AWS-managed AdministratorAccess policy being attached (which
+        is literally ``*:*`` and is the most common real-world case).
+        """
         # 2a: policy documents that allow Action:* on Resource:*
         for d in docs:
             for stmt in pol.allow_statements(d.document):
@@ -331,6 +386,13 @@ class _IamScanner:
             self._error("iam_admin_access_attached", "AdministratorAccess attachments", err)
 
     def _check_passrole(self, docs: list[_PolicyDoc]) -> None:
+        """Check 5: flag iam:PassRole granted on Resource:* (a privesc path).
+
+        PassRole is only dangerous when unscoped: with ``Resource:"*"`` the
+        principal can hand ANY role (including admin roles) to a service like
+        Lambda or EC2 and inherit its permissions. Scoped PassRole is normal
+        and intentionally not flagged.
+        """
         for d in docs:
             for stmt in pol.allow_statements(d.document):
                 if pol.grants_any(stmt, ["iam:PassRole"]) and pol.has_wildcard_resource(stmt):
@@ -348,6 +410,12 @@ class _IamScanner:
                     break
 
     def _check_guardduty_tampering(self, docs: list[_PolicyDoc]) -> None:
+        """Check 7: flag policies granting GuardDuty disable/hide actions.
+
+        ``grants_any`` honours wildcards, so a bare ``*`` or ``guardduty:*``
+        also matches here (defense-evasion lens). Note this flags who *can*
+        tamper with GuardDuty — not whether GuardDuty is actually enabled.
+        """
         for d in docs:
             for stmt in pol.allow_statements(d.document):
                 matched = pol.grants_any(stmt, GUARDDUTY_TAMPER_ACTIONS)
@@ -367,9 +435,17 @@ class _IamScanner:
                     break
 
     def _check_trust_policy_wildcard(self) -> None:
+        """Check 6: flag role trust policies that allow a ``*`` principal.
+
+        A ``*`` principal with no Condition means anyone, in any account, can
+        assume the role (CRITICAL). A ``*`` constrained by a Condition (e.g.
+        ``sts:ExternalId``) can be legitimate, so it's downgraded to MEDIUM
+        with a note to verify the condition.
+        """
         try:
             for page in self.iam.get_paginator("list_roles").paginate():
                 for role in page["Roles"]:
+                    # boto3 returns the trust policy already parsed into a dict.
                     trust = role.get("AssumeRolePolicyDocument") or {}
                     for stmt in pol.allow_statements(trust):
                         if not pol.principal_is_wildcard(stmt):

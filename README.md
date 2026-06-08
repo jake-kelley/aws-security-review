@@ -1,57 +1,43 @@
 # aws-security-review (`awssec`)
 
-A small, read-only scanner for common AWS security misconfigurations and bad
-practices. It is designed to run with **nothing more than the AWS-managed
+A small, **read-only** scanner for common AWS security misconfigurations. It only
+reads configuration and reports findings — it never changes your account.
+
+Coverage is organized one module per service. **IAM** ships today; S3, EC2,
+Lambda, GuardDuty, and access-key modules are planned and plug into the same
+reporting contract.
+
+## Quick start
+
+Needs Python 3.9+ and AWS credentials for a principal with the AWS-managed
 [`SecurityAudit`](https://docs.aws.amazon.com/aws-managed-policy/latest/reference/SecurityAudit.html)
-policy** — no write access required.
-
-The tool is organized as one module per service so coverage can grow over
-time. The first module is **IAM**; S3, EC2, Lambda, GuardDuty, and access-key
-modules are planned and plug into the same `Finding` / reporter contract.
-
-## Requirements
-
-- Python 3.9+
-- `boto3` (`pip install -r requirements.txt`)
-- AWS credentials for a principal with the **`SecurityAudit`** managed policy.
-
-> Why `SecurityAudit` and not `ReadOnlyAccess`? `SecurityAudit` is the only
-> AWS-managed read-only policy that includes `iam:GenerateCredentialReport`
-> and policy simulation, and it is a much tighter least-privilege fit for an
-> auditor than the very broad `ReadOnlyAccess`. `ViewOnlyAccess` is too narrow
-> (it lacks `GetCredentialReport`).
-
-## Install & run
+policy.
 
 ```bash
-# from the repo root
 pip install -r requirements.txt
 
-# scan every module against the default credential chain
-python -m awssec
-
-# only IAM, using a named profile and region
-python -m awssec --module iam --profile audit --region us-east-1
-
-# machine-readable output for pipelines / CI
-python -m awssec --json > findings.json
-
-# fail a CI job if any HIGH-or-worse finding exists
-python -m awssec --fail-on HIGH
+python -m awssec                       # scan everything (default credentials)
+python -m awssec --module iam          # one module
+python -m awssec --profile audit       # a named profile
+python -m awssec --json > findings.json  # machine-readable output
+python -m awssec --fail-on HIGH        # exit non-zero for CI gating
 ```
 
-If you use [`uv`](https://docs.astral.sh/uv/) (no venv needed):
+Using [`uv`](https://docs.astral.sh/uv/) (no virtualenv needed):
 
 ```bash
 uv run --no-project --with-requirements requirements.txt python -m awssec
 ```
 
-> If your profile authenticates via AWS SSO or the `aws login` (`login_session`)
-> credential provider, you need the `botocore[crt]` extra — it's already listed
-> in `requirements.txt`. Without it boto3 raises
-> *"Using the login credential provider requires an additional dependency"*.
+> **Why `SecurityAudit`?** It's the only AWS-managed read-only policy that
+> includes `iam:GenerateCredentialReport` and policy simulation, and it's a
+> tighter least-privilege fit than the broad `ReadOnlyAccess`.
+>
+> **SSO / `aws login` users:** these auth providers need the `botocore[crt]`
+> extra (already in `requirements.txt`). Without it you'll see *"Using the
+> login credential provider requires an additional dependency."*
 
-### Options
+## Options
 
 | Flag | Description |
 |------|-------------|
@@ -60,48 +46,38 @@ uv run --no-project --with-requirements requirements.txt python -m awssec
 | `--region NAME` | AWS region (defaults to profile/env region). |
 | `--json` | Emit findings as JSON instead of the console report. |
 | `--no-color` | Disable ANSI colors. |
-| `--fail-on SEV` | Exit non-zero if any FAIL finding ≥ this severity (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). |
+| `--fail-on SEV` | Exit non-zero if any finding ≥ this severity (`LOW`/`MEDIUM`/`HIGH`/`CRITICAL`). |
 
-## IAM checks (module: `iam`)
+## IAM checks
 
-| check_id | What it flags | Severity | Reference |
-|----------|---------------|----------|-----------|
-| `iam_root_mfa_enabled` | Root user without MFA | CRITICAL | CIS 1.5/1.6 |
-| `iam_root_access_keys` | Root user has access keys | CRITICAL | CIS 1.4 |
-| `iam_full_admin_policy` | Customer-managed/inline policy allowing `Action:*` on `Resource:*` | HIGH/MEDIUM | CIS 1.16 |
-| `iam_admin_access_attached` | Principal with the AWS-managed `AdministratorAccess` attached | HIGH | CIS 1.16 |
-| `iam_access_key_age` | Active access key not rotated in > 90 days | MEDIUM | CIS 1.14 |
-| `iam_user_console_no_mfa` | IAM user with a console password but no MFA (password-only sign-in) | HIGH | CIS 1.10 |
-| `iam_passrole_wildcard` | `iam:PassRole` granted with `Resource:*` (privilege-escalation path) | HIGH | — |
-| `iam_trust_wildcard_principal` | Role trust policy allowing a `*` principal (CRITICAL with no `Condition`, MEDIUM if conditioned) | CRITICAL/MEDIUM | — |
-| `iam_guardduty_tamper` | Policy granting GuardDuty disable/archive/delete actions (detection evasion) | HIGH | — |
+| check_id | Flags | Severity | CIS |
+|----------|-------|----------|-----|
+| `iam_root_mfa_enabled` | Root user without MFA | CRITICAL | 1.5/1.6 |
+| `iam_root_access_keys` | Root user has access keys | CRITICAL | 1.4 |
+| `iam_full_admin_policy` | Policy allowing `Action:*` on `Resource:*` | HIGH/MEDIUM | 1.16 |
+| `iam_admin_access_attached` | Principal with `AdministratorAccess` attached | HIGH | 1.16 |
+| `iam_access_key_age` | Active access key not rotated in > 90 days | MEDIUM | 1.14 |
+| `iam_user_console_no_mfa` | Console password but no MFA | HIGH | 1.10 |
+| `iam_passrole_wildcard` | `iam:PassRole` with `Resource:*` (privesc) | HIGH | — |
+| `iam_trust_wildcard_principal` | Trust policy allowing a `*` principal | CRITICAL/MEDIUM | — |
+| `iam_guardduty_tamper` | Policy that can disable/hide GuardDuty | HIGH | — |
 
-### How findings are produced
+**How it works:** credential-report checks (root, key age, console-no-MFA) come
+from one `get_credential_report` call; policy checks scan the JSON of every
+customer-managed and inline policy for dangerous patterns.
 
-- **Credential-report checks** (`root`, key age, console-no-MFA) come from a
-  single `generate_credential_report` / `get_credential_report` call.
-- **Policy-pattern checks** (`full_admin`, `passrole`, `guardduty_tamper`)
-  inspect the JSON of every customer-managed policy (default version) and
-  every inline policy on users/roles/groups. They match dangerous patterns
-  rather than resolving effective permissions.
+**Limitations (by design):** policy checks match patterns rather than resolving
+*effective* permissions, so an SCP, permission boundary, or explicit `Deny`
+could make a finding moot. `NotAction` / `NotResource` aren't interpreted. The
+GuardDuty check flags who *can* tamper, not whether GuardDuty is enabled.
 
-### Known limitations (by design, for simplicity)
-
-- Pattern checks **do not resolve effective permissions** — an SCP, permission
-  boundary, or explicit `Deny` elsewhere could make a flagged statement moot.
-- `NotAction` / `NotResource` statements are **not interpreted** and may be
-  under-reported.
-- The GuardDuty check looks at *who has the permission* in a policy document;
-  it does not check whether GuardDuty is actually enabled (that will be a
-  dedicated GuardDuty module).
-
-## Project layout
+## Layout
 
 ```
 awssec/
-  cli.py            # argument parsing, orchestration, exit codes
+  cli.py            # arg parsing, orchestration, exit codes
   core/
-    finding.py      # the Finding dataclass + Severity/Status (output contract)
+    finding.py      # Finding dataclass + Severity/Status (output contract)
     session.py      # boto3 session + ScanContext + access-denied helper
     policy.py       # policy-document helpers (wildcards, action matching)
     report.py       # console (ANSI) + JSON reporters
@@ -109,6 +85,5 @@ awssec/
     iam.py          # the IAM checks
 ```
 
-Findings that cannot run (e.g. a missing permission) are reported as
-`ERROR` status rather than crashing the scan, so partial-permission runs
-still produce useful output.
+A check that can't run (e.g. missing permission) is reported as an `ERROR`
+finding instead of crashing the scan.

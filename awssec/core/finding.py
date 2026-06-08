@@ -46,15 +46,15 @@ class Finding:
     doc links.
     """
 
-    check_id: str
-    title: str
-    service: str
-    severity: Severity
-    status: Status
-    resource: str = "-"
-    detail: str = ""
-    recommendation: str = ""
-    references: list[str] = field(default_factory=list)
+    check_id: str  # stable id, e.g. "iam_root_mfa_enabled"
+    title: str  # short human-readable headline
+    service: str  # owning module, e.g. "iam"
+    severity: Severity  # how bad it is if FAIL
+    status: Status  # FAIL / PASS / ERROR
+    resource: str = "-"  # what it's about (ARN, user name, ...); "-" if N/A
+    detail: str = ""  # one or two sentences of explanation
+    recommendation: str = ""  # how to fix it
+    references: list[str] = field(default_factory=list)  # CIS ids, doc links
 
     def to_dict(self) -> dict:
         """Plain dict for the ``--json`` output."""

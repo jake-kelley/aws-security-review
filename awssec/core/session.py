@@ -1,4 +1,10 @@
-"""boto3 session setup and small helpers shared by modules."""
+"""boto3 session setup and small helpers shared by modules.
+
+Centralizes two things every module needs: a configured boto3 session
+(wrapped in :class:`ScanContext`) and a consistent way to recognize an
+"access denied" error so a missing permission degrades gracefully instead
+of aborting the scan.
+"""
 
 from __future__ import annotations
 
@@ -35,8 +41,12 @@ def build_context(profile: str | None = None, region: str | None = None) -> Scan
     STS call fails, so the CLI can report a clear error.
     """
     session = boto3.Session(profile_name=profile, region_name=region)
+    # get_caller_identity doubles as a credential check (it fails fast if the
+    # session can't authenticate) and gives us the account id for reporting.
     sts = session.client("sts")
     ident = sts.get_caller_identity()
+    # Fall back to us-east-1 only if neither the profile nor the flag set one;
+    # IAM is global, so the exact region rarely matters for this tool.
     resolved_region = session.region_name or region or "us-east-1"
     return ScanContext(
         session=session,

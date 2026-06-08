@@ -14,11 +14,16 @@ import sys
 
 from .finding import Finding, Severity, Status
 
-# ANSI codes
+# ---------------------------------------------------------------------------
+# ANSI color palette
+# ---------------------------------------------------------------------------
+# Raw escape sequences; "\033[" starts a code, the trailing "m" ends it.
+# Every colored string is wrapped with _RESET so color never bleeds onward.
 _RESET = "\033[0m"
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 
+# Map each severity / status to the escape code used to highlight it.
 _SEVERITY_COLOR = {
     Severity.CRITICAL: "\033[97;41m",  # white on red
     Severity.HIGH: "\033[91m",  # red
@@ -48,13 +53,19 @@ def _enable_windows_ansi() -> None:
 
 
 def _color_enabled(no_color: bool) -> bool:
+    """Decide whether to emit color.
+
+    Off if the user opted out (``--no-color`` or the ``NO_COLOR`` convention)
+    or if stdout is redirected to a file/pipe (not a TTY) — that keeps
+    ``--json`` output and piped reports free of escape codes.
+    """
     if no_color or os.environ.get("NO_COLOR"):
         return False
     return sys.stdout.isatty()
 
 
 class Reporter:
-    """Formats a finished scan for humans or machines."""
+    """Formats a finished scan for humans (console) or machines (JSON)."""
 
     def __init__(self, no_color: bool = False):
         self.use_color = _color_enabled(no_color)
@@ -62,12 +73,14 @@ class Reporter:
             _enable_windows_ansi()
 
     def _c(self, text: str, code: str) -> str:
+        """Wrap ``text`` in a color code (or return it unchanged if color off)."""
         if not self.use_color:
             return text
         return f"{code}{text}{_RESET}"
 
     # ----- JSON ---------------------------------------------------------
     def to_json(self, findings: list[Finding], metadata: dict) -> str:
+        """Serialize findings + run metadata + a rollup summary as JSON."""
         counts = self._counts(findings)
         payload = {
             "metadata": metadata,
@@ -82,6 +95,12 @@ class Reporter:
 
     # ----- Console ------------------------------------------------------
     def to_console(self, findings: list[Finding], metadata: dict) -> str:
+        """Build the human-readable report as a single string.
+
+        Layout: a header (which account/region/profile), the failures
+        (severity-sorted), any checks that errored out, then a one-line
+        summary and a count of passing checks.
+        """
         lines: list[str] = []
         title = self._c("AWS Security Review", _BOLD)
         lines.append(f"\n{title}")
@@ -120,6 +139,11 @@ class Reporter:
         return "\n".join(lines)
 
     def _render_finding(self, f: Finding) -> list[str]:
+        """Render one FAIL finding as a colored block of lines.
+
+        Optional fields (detail/fix/refs) are only shown when present, so
+        sparse findings stay compact.
+        """
         sev = self._c(f" {str(f.severity):<8} ", _SEVERITY_COLOR[f.severity])
         head = f"  {sev} {self._c(f.title, _BOLD)}"
         out = [head, f"      resource:  {f.resource}"]
@@ -134,10 +158,12 @@ class Reporter:
         return out
 
     def _summary_line(self, findings: list[Finding]) -> str:
+        """One-line tally, e.g. ``SUMMARY: 3 findings  (1 CRITICAL  2 HIGH)``."""
         counts = self._counts(findings)["severity"]
         fail_total = sum(
             1 for f in findings if f.status is Status.FAIL
         )
+        # Build the per-severity breakdown, skipping severities with a zero count.
         parts = []
         for sev in (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW):
             n = counts.get(sev, 0)
@@ -148,6 +174,11 @@ class Reporter:
 
     @staticmethod
     def _counts(findings: list[Finding]) -> dict:
+        """Tally findings by status, and (for FAILs only) by severity.
+
+        Severity is only meaningful for failures, so PASS/ERROR findings are
+        deliberately excluded from the severity breakdown.
+        """
         status: dict[Status, int] = {}
         severity: dict[Severity, int] = {}
         for f in findings:
