@@ -3,9 +3,9 @@
 A small, **read-only** scanner for common AWS security misconfigurations. It only
 reads configuration and reports findings — it never changes your account.
 
-Coverage is organized one module per service. **IAM** ships today; S3, EC2,
-Lambda, GuardDuty, and access-key modules are planned and plug into the same
-reporting contract.
+Coverage is organized one module per service. **IAM** and **GuardDuty** ship
+today; S3, EC2, Lambda, and access-key modules are planned and plug into the
+same reporting contract.
 
 ## Quick start
 
@@ -69,7 +69,18 @@ customer-managed and inline policy for dangerous patterns.
 **Limitations (by design):** policy checks match patterns rather than resolving
 *effective* permissions, so an SCP, permission boundary, or explicit `Deny`
 could make a finding moot. `NotAction` / `NotResource` aren't interpreted. The
-GuardDuty check flags who *can* tamper, not whether GuardDuty is enabled.
+IAM `iam_guardduty_tamper` check flags who *can* tamper with GuardDuty; whether
+GuardDuty is actually on is covered by the GuardDuty module below.
+
+## GuardDuty checks
+
+| check_id | Flags | Severity | CIS |
+|----------|-------|----------|-----|
+| `guardduty_enabled` | No GuardDuty detector, or a suspended/disabled one, in any enabled region | HIGH | 3.x |
+
+GuardDuty is enabled per-region, so this module enumerates every region enabled
+for the account (`ec2:DescribeRegions`) and reports one result per region —
+flagging regions where GuardDuty is missing or not actively monitoring.
 
 ## Layout
 
@@ -83,6 +94,7 @@ awssec/
     report.py       # console (ANSI) + JSON reporters
   modules/
     iam.py          # the IAM checks
+    guardduty.py    # GuardDuty enablement (all regions)
 ```
 
 A check that can't run (e.g. missing permission) is reported as an `ERROR`

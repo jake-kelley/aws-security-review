@@ -7,9 +7,10 @@ rest.
 
 from __future__ import annotations
 
-from . import iam
+from . import guardduty, iam
 
 # name -> module. Order here is the default scan order.
 MODULES = {
     iam.SERVICE: iam,
+    guardduty.SERVICE: guardduty,
 }
