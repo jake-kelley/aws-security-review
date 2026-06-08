@@ -79,8 +79,10 @@ GuardDuty is actually on is covered by the GuardDuty module below.
 | `guardduty_enabled` | No GuardDuty detector, or a suspended/disabled one, in any enabled region | HIGH | 3.x |
 
 GuardDuty is enabled per-region, so this module enumerates every region enabled
-for the account (`ec2:DescribeRegions`) and reports one result per region —
-flagging regions where GuardDuty is missing or not actively monitoring.
+for the account (`ec2:DescribeRegions`) and reports one result per region. The
+state of **every** region is shown: regions with a problem appear under
+`FINDINGS`, and regions where GuardDuty is healthy are listed (compactly) under
+`PASSED`. The `--json` output includes one entry per region with its status.
 
 ## Layout
 

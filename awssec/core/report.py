@@ -98,8 +98,9 @@ class Reporter:
         """Build the human-readable report as a single string.
 
         Layout: a header (which account/region/profile), the failures
-        (severity-sorted), any checks that errored out, then a one-line
-        summary and a count of passing checks.
+        (severity-sorted, full detail), the passing checks (compact, one line
+        each so per-resource state — e.g. each region — stays visible), any
+        checks that errored out, then a one-line summary.
         """
         lines: list[str] = []
         title = self._c("AWS Security Review", _BOLD)
@@ -118,25 +119,43 @@ class Reporter:
         errors = [f for f in findings if f.status is Status.ERROR]
         passes = [f for f in findings if f.status is Status.PASS]
 
-        # Failures first, most severe at the top.
+        # Failures first, most severe at the top, with full detail.
         if fails:
             lines.append(self._c("FINDINGS", _BOLD))
             for f in sorted(fails, key=lambda x: x.severity, reverse=True):
                 lines.extend(self._render_finding(f))
             lines.append("")
 
+        # Passing checks, listed compactly (sorted by resource) so the state of
+        # each resource — e.g. every region for the GuardDuty check — is shown,
+        # not just a count.
+        if passes:
+            lines.append(self._c(f"PASSED ({len(passes)})", _BOLD))
+            for f in sorted(passes, key=lambda x: x.resource):
+                lines.append(self._compact_line(f, "PASS", _STATUS_COLOR[Status.PASS]))
+            lines.append("")
+
         # Errors (usually missing permissions) so they aren't mistaken for passes.
         if errors:
             lines.append(self._c("COULD NOT CHECK (errors / missing permissions)", _BOLD))
-            for f in errors:
-                badge = self._c(" ERROR ", _STATUS_COLOR[Status.ERROR])
-                lines.append(f"  {badge} [{f.check_id}] {f.detail}")
+            for f in sorted(errors, key=lambda x: x.resource):
+                lines.append(self._compact_line(f, "ERROR", _STATUS_COLOR[Status.ERROR]))
             lines.append("")
 
         lines.append(self._summary_line(findings))
-        if passes:
-            lines.append(self._c(f"  ({len(passes)} checks passed)", _DIM))
         return "\n".join(lines)
+
+    def _compact_line(self, f: Finding, label: str, color: str) -> str:
+        """One-line rendering used for PASS / ERROR findings.
+
+        Shows the badge, check id, resource, and detail, e.g.::
+
+            PASS  [guardduty_enabled] us-east-1 (det-123) - detector is ENABLED.
+        """
+        badge = self._c(f" {label} ", color)
+        resource = f" {f.resource}" if f.resource and f.resource != "-" else ""
+        detail = f" - {f.detail}" if f.detail else ""
+        return f"  {badge} [{f.check_id}]{resource}{detail}"
 
     def _render_finding(self, f: Finding) -> list[str]:
         """Render one FAIL finding as a colored block of lines.
