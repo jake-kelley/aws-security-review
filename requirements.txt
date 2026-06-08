@@ -1,0 +1,3 @@
+boto3>=1.26
+# Needed for the AWS SSO / `aws login` (login_session) credential providers.
+botocore[crt]>=1.29
