@@ -13,6 +13,7 @@ import os
 import sys
 
 from .finding import Finding, Severity, Status
+from .table import Table
 
 # ---------------------------------------------------------------------------
 # ANSI color palette
@@ -35,6 +36,16 @@ _STATUS_COLOR = {
     Status.FAIL: "\033[91m",
     Status.PASS: "\033[92m",
     Status.ERROR: "\033[95m",
+}
+
+# Color for the short status tokens used inside tables (see table.py).
+_TOKEN_COLOR = {
+    "ON": "\033[92m",  # green  - enabled / pass
+    "OFF": "\033[91m",  # red    - disabled / fail
+    "SUSPENDED": "\033[93m",  # yellow - detector present but not monitoring
+    "ERR": "\033[95m",  # magenta- could not read
+    "-": _DIM,  # grey   - not applicable
+    "N/A": _DIM,
 }
 
 
@@ -79,8 +90,13 @@ class Reporter:
         return f"{code}{text}{_RESET}"
 
     # ----- JSON ---------------------------------------------------------
-    def to_json(self, findings: list[Finding], metadata: dict) -> str:
-        """Serialize findings + run metadata + a rollup summary as JSON."""
+    def to_json(
+        self,
+        findings: list[Finding],
+        metadata: dict,
+        tables: list[Table] | None = None,
+    ) -> str:
+        """Serialize findings + tables + run metadata + a rollup summary as JSON."""
         counts = self._counts(findings)
         payload = {
             "metadata": metadata,
@@ -90,18 +106,29 @@ class Reporter:
                 "by_severity": {str(k): v for k, v in counts["severity"].items()},
             },
             "findings": [f.to_dict() for f in findings],
+            "tables": [t.to_dict() for t in (tables or [])],
         }
         return json.dumps(payload, indent=2, default=str)
 
     # ----- Console ------------------------------------------------------
-    def to_console(self, findings: list[Finding], metadata: dict) -> str:
+    def to_console(
+        self,
+        findings: list[Finding],
+        metadata: dict,
+        tables: list[Table] | None = None,
+    ) -> str:
         """Build the human-readable report as a single string.
 
         Layout: a header (which account/region/profile), the failures
         (severity-sorted, full detail), the passing checks (compact, one line
-        each so per-resource state — e.g. each region — stays visible), any
+        each so per-resource state stays visible), any module tables, any
         checks that errored out, then a one-line summary.
+
+        Findings whose service is represented by a table are *not* listed
+        individually (the table is the clearer view) — but they still count in
+        the summary and appear in the JSON output.
         """
+        tables = tables or []
         lines: list[str] = []
         title = self._c("AWS Security Review", _BOLD)
         lines.append(f"\n{title}")
@@ -115,9 +142,13 @@ class Reporter:
         )
         lines.append("")
 
-        fails = [f for f in findings if f.status is Status.FAIL]
-        errors = [f for f in findings if f.status is Status.ERROR]
-        passes = [f for f in findings if f.status is Status.PASS]
+        # A finding whose service has a table is shown via that table instead of
+        # as an individual line, to avoid duplicating (and flooding) the output.
+        tabled_services = {t.service for t in tables}
+        listed = [f for f in findings if f.service not in tabled_services]
+        fails = [f for f in listed if f.status is Status.FAIL]
+        errors = [f for f in listed if f.status is Status.ERROR]
+        passes = [f for f in listed if f.status is Status.PASS]
 
         # Failures first, most severe at the top, with full detail.
         if fails:
@@ -126,14 +157,17 @@ class Reporter:
                 lines.extend(self._render_finding(f))
             lines.append("")
 
-        # Passing checks, listed compactly (sorted by resource) so the state of
-        # each resource — e.g. every region for the GuardDuty check — is shown,
-        # not just a count.
+        # Passing checks, listed compactly (sorted by resource) so per-resource
+        # state is shown, not just a count.
         if passes:
             lines.append(self._c(f"PASSED ({len(passes)})", _BOLD))
             for f in sorted(passes, key=lambda x: x.resource):
                 lines.append(self._compact_line(f, "PASS", _STATUS_COLOR[Status.PASS]))
             lines.append("")
+
+        # Module tables (e.g. GuardDuty coverage by region).
+        for table in tables:
+            lines.extend(self._render_table(table))
 
         # Errors (usually missing permissions) so they aren't mistaken for passes.
         if errors:
@@ -144,6 +178,40 @@ class Reporter:
 
         lines.append(self._summary_line(findings))
         return "\n".join(lines)
+
+    def _render_table(self, t: Table) -> list[str]:
+        """Render a Table as aligned, colored columns.
+
+        Column widths are computed from the *visible* text (headers and cell
+        tokens), then color codes are added afterwards so the ANSI escapes
+        don't throw off the alignment.
+        """
+        # Width of the row-label column, and of each data column.
+        label_w = max([len(t.corner)] + [len(r.label) for r in t.rows])
+        col_w = [
+            max([len(col)] + [len(r.cells[i]) for r in t.rows])
+            for i, col in enumerate(t.columns)
+        ]
+
+        lines = [self._c(t.title, _BOLD)]
+
+        # Header row (corner label + column headers).
+        header = t.corner.ljust(label_w)
+        for i, col in enumerate(t.columns):
+            header += "  " + col.ljust(col_w[i])
+        lines.append(self._c(header, _BOLD))
+
+        # One line per row; pad to the visible width, then colorize the token.
+        for r in t.rows:
+            row = r.label.ljust(label_w)
+            for i, cell in enumerate(r.cells):
+                pad = " " * (col_w[i] - len(cell))
+                color = _TOKEN_COLOR.get(cell)
+                token = self._c(cell, color) if color else cell
+                row += "  " + token + pad
+            lines.append(row)
+        lines.append("")
+        return lines
 
     def _compact_line(self, f: Finding, label: str, color: str) -> str:
         """One-line rendering used for PASS / ERROR findings.

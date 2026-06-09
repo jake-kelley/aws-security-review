@@ -81,12 +81,15 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2  # distinct from the --fail-on exit code (1) so CI can tell them apart
 
-    # Run the requested modules (default: all). Each returns a list of Findings;
-    # we simply concatenate them into one flat list for reporting.
+    # Run the requested modules (default: all). Each returns a ScanResult; we
+    # concatenate the findings into one flat list and collect any module tables.
     selected = args.module or list(MODULES)
     findings = []
+    tables = []
     for name in selected:
-        findings.extend(MODULES[name].run(ctx))
+        result = MODULES[name].run(ctx)
+        findings.extend(result.findings)
+        tables.extend(result.tables)
 
     # Context echoed in both output formats so a saved report is self-describing.
     metadata = {
@@ -98,12 +101,12 @@ def main(argv: list[str] | None = None) -> int:
         "modules": selected,
     }
 
-    # Two output modes; both consume the exact same findings list.
+    # Two output modes; both consume the same findings list and module tables.
     reporter = Reporter(no_color=args.no_color)
     if args.json:
-        print(reporter.to_json(findings, metadata))
+        print(reporter.to_json(findings, metadata, tables))
     else:
-        print(reporter.to_console(findings, metadata))
+        print(reporter.to_console(findings, metadata, tables))
 
     return _exit_code(findings, args.fail_on)
 

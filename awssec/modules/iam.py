@@ -32,7 +32,7 @@ from datetime import datetime, timezone
 from botocore.exceptions import ClientError
 
 from ..core import policy as pol
-from ..core.finding import Finding, Severity, Status
+from ..core.finding import Finding, ScanResult, Severity, Status
 from ..core.session import ScanContext, is_access_denied
 
 SERVICE = "iam"
@@ -70,10 +70,10 @@ class _PolicyDoc:
     extra: str = ""  # free-text note (e.g. attachment count)
 
 
-def run(ctx: ScanContext) -> list[Finding]:
-    """Entry point called by the CLI. Returns all IAM findings."""
+def run(ctx: ScanContext) -> ScanResult:
+    """Entry point called by the CLI. Returns all IAM findings (no tables)."""
     scanner = _IamScanner(ctx)
-    return scanner.scan()
+    return ScanResult(findings=scanner.scan())
 
 
 class _IamScanner:

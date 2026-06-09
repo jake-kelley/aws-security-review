@@ -11,6 +11,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
+from .table import Table
+
 
 class Severity(enum.IntEnum):
     """Ordered so we can sort most-urgent-first (higher value = worse)."""
@@ -69,3 +71,17 @@ class Finding:
             "recommendation": self.recommendation,
             "references": self.references,
         }
+
+
+@dataclass
+class ScanResult:
+    """What a module's ``run(ctx)`` returns.
+
+    ``findings`` is the flat list every module produces (and what drives
+    ``--fail-on`` and the JSON ``findings`` array). ``tables`` is optional
+    extra structure for modules that are clearer as a grid (e.g. GuardDuty
+    feature coverage by region); most modules leave it empty.
+    """
+
+    findings: list[Finding] = field(default_factory=list)
+    tables: list[Table] = field(default_factory=list)

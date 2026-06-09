@@ -74,15 +74,26 @@ GuardDuty is actually on is covered by the GuardDuty module below.
 
 ## GuardDuty checks
 
-| check_id | Flags | Severity | CIS |
-|----------|-------|----------|-----|
-| `guardduty_enabled` | No GuardDuty detector, or a suspended/disabled one, in any enabled region | HIGH | 3.x |
+| check_id | Flags | Severity |
+|----------|-------|----------|
+| `guardduty_enabled` | No GuardDuty detector, or a suspended/disabled one | HIGH |
+| `guardduty_s3_protection` | S3 Protection disabled | MEDIUM |
+| `guardduty_runtime_monitoring` | Runtime Monitoring (reported as status only, never a fail) | — |
+| `guardduty_eks_protection` | EKS (audit log) Protection disabled | MEDIUM |
+| `guardduty_rds_protection` | RDS (login) Protection disabled | MEDIUM |
+| `guardduty_lambda_protection` | Lambda (network) Protection disabled | MEDIUM |
 
 GuardDuty is enabled per-region, so this module enumerates every region enabled
-for the account (`ec2:DescribeRegions`) and reports one result per region. The
-state of **every** region is shown: regions with a problem appear under
-`FINDINGS`, and regions where GuardDuty is healthy are listed (compactly) under
-`PASSED`. The `--json` output includes one entry per region with its status.
+for the account (`ec2:DescribeRegions`) and checks the detector plus its
+protection features in each one (all from a single `get_detector` call per
+region). Feature checks are only evaluated where a detector is actually enabled;
+elsewhere they show as not-applicable (`-`).
+
+Results are rendered as a **coverage table** — checks as rows, regions as
+columns — on the console and in the `--json` output (`tables` array). Cell
+tokens: `ON` (enabled), `OFF` (disabled), `SUSPENDED` (detector present but not
+monitoring), `-` (not applicable), `ERR` (call failed). The underlying per-region
+pass/fail findings are still in the JSON `findings` array and drive `--fail-on`.
 
 ## Layout
 
