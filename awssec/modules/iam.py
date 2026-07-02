@@ -95,6 +95,8 @@ class _IamScanner:
     def scan(self) -> list[Finding]:
         """Run every check and return the collected findings."""
         # Group 1: checks driven by the single IAM credential report.
+        # Generating the report can poll for up to ~30s on a cold cache.
+        self.ctx.progress.update("iam: credential report (can take ~30s on first run)")
         report = self._load_credential_report()
         self._check_root_account(report)
         self._check_access_key_age(report)
@@ -108,6 +110,7 @@ class _IamScanner:
 
         # Trust policies live on the roles themselves, so this check reads roles
         # directly rather than going through the collected identity policies.
+        self.ctx.progress.update("iam: role trust policies")
         self._check_trust_policy_wildcard()
         return self.findings
 
@@ -176,6 +179,7 @@ class _IamScanner:
 
     def _collect_customer_managed(self) -> list[_PolicyDoc]:
         """Fetch the default version document of each customer-managed policy."""
+        self.ctx.progress.update("iam: customer-managed policies")
         docs: list[_PolicyDoc] = []
         try:
             paginator = self.iam.get_paginator("list_policies")
@@ -215,6 +219,7 @@ class _IamScanner:
             ("list_groups", "Groups", "list_group_policies", "get_group_policy", "GroupName", "group"),
         ]
         for list_call, response_key, list_inline, get_call, id_key, label in kinds:
+            self.ctx.progress.update(f"iam: inline policies on {label}s")
             try:
                 for page in self.iam.get_paginator(list_call).paginate():
                     for item in page[response_key]:

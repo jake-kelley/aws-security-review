@@ -8,10 +8,12 @@ of aborting the scan.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import boto3
 from botocore.exceptions import ClientError
+
+from .progress import Progress
 
 # Error codes AWS returns when the caller lacks a permission. We treat these
 # specially so a missing permission becomes a visible ERROR finding rather
@@ -27,10 +29,30 @@ class ScanContext:
     account_id: str
     region: str
     profile: str | None = None
+    # Progress sink for long scans. Disabled by default so modules can call
+    # ``ctx.progress.update(...)`` unconditionally (and tests stay silent);
+    # the CLI swaps in an auto-detecting one for real runs.
+    progress: Progress = field(default_factory=lambda: Progress(enabled=False))
+    # Cache for enabled_regions() (several modules need the same list).
+    _regions: list[str] | None = field(default=None, init=False, repr=False)
 
     def client(self, service: str):
         """Return a boto3 client for ``service`` on this session."""
         return self.session.client(service, region_name=self.region)
+
+    def enabled_regions(self) -> list[str]:
+        """List the regions enabled for this account (sorted).
+
+        Uses ``ec2:DescribeRegions``, which only returns regions the account
+        has opted into, so disabled regions are never scanned. The result is
+        cached because every all-regions module (EC2, Lambda, GuardDuty)
+        needs it. Raises ``ClientError`` if the call fails; callers typically
+        fall back to ``self.region`` and emit an ERROR finding.
+        """
+        if self._regions is None:
+            resp = self.client("ec2").describe_regions()
+            self._regions = sorted(r["RegionName"] for r in resp["Regions"])
+        return self._regions
 
 
 def build_context(profile: str | None = None, region: str | None = None) -> ScanContext:

@@ -79,7 +79,8 @@ class _GuardDutyScanner:
     def scan(self) -> ScanResult:
         """Check each region, then assemble the region x check coverage table."""
         regions = self._regions()
-        for region in regions:
+        for i, region in enumerate(regions, start=1):
+            self.ctx.progress.update(f"guardduty: {region} ({i}/{len(regions)})")
             self._scan_region(region)
         table = self._build_table(regions)
         return ScanResult(findings=self.findings, tables=[table])
@@ -96,12 +97,12 @@ class _GuardDutyScanner:
     def _regions(self) -> list[str]:
         """List the regions enabled for this account (sorted).
 
-        Uses EC2's ``describe_regions`` so only regions the account actually
-        uses are checked. Falls back to the context region if that fails.
+        Uses the shared (cached) ``ScanContext.enabled_regions()`` helper so
+        only regions the account actually uses are checked. Falls back to the
+        context region if that fails.
         """
         try:
-            resp = self.ctx.client("ec2").describe_regions()
-            return sorted(r["RegionName"] for r in resp["Regions"])
+            return self.ctx.enabled_regions()
         except ClientError as err:
             self._add(
                 check_id="guardduty_region_lookup",

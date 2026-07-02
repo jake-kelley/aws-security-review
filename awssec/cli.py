@@ -17,6 +17,7 @@ from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError
 
 from . import __version__
 from .core.finding import Severity, Status
+from .core.progress import Progress
 from .core.report import Reporter
 from .core.session import build_context
 from .modules import MODULES
@@ -44,7 +45,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--profile", help="AWS named profile to use.")
     parser.add_argument("--region", help="AWS region (default: profile/env region).")
-    parser.add_argument("--json", action="store_true", help="Emit findings as JSON.")
+    # Output format: console (default), JSON to stdout, or an HTML file.
+    # Mutually exclusive so the intent is unambiguous.
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true", help="Emit findings as JSON to stdout.")
+    output.add_argument(
+        "--html",
+        nargs="?",
+        const="awssec-report.html",
+        default=None,
+        metavar="PATH",
+        help="Write a self-contained HTML report to PATH "
+        "(default: awssec-report.html).",
+    )
     parser.add_argument("--no-color", action="store_true", help="Disable colored output.")
     parser.add_argument(
         "--fail-on",
@@ -81,15 +94,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 2  # distinct from the --fail-on exit code (1) so CI can tell them apart
 
+    # Live progress on stderr while the scan runs (auto-silent when stderr is
+    # not an interactive terminal, so CI logs and redirects stay clean).
+    # Modules refine it with their own per-region / per-resource updates.
+    progress = Progress()
+    ctx.progress = progress
+
     # Run the requested modules (default: all). Each returns a ScanResult; we
     # concatenate the findings into one flat list and collect any module tables.
     selected = args.module or list(MODULES)
     findings = []
     tables = []
-    for name in selected:
+    for i, name in enumerate(selected, start=1):
+        progress.update(f"[{i}/{len(selected)}] {name}: scanning...")
         result = MODULES[name].run(ctx)
         findings.extend(result.findings)
         tables.extend(result.tables)
+    progress.clear()  # erase the status line before the real report prints
 
     # Context echoed in both output formats so a saved report is self-describing.
     metadata = {
@@ -101,10 +122,19 @@ def main(argv: list[str] | None = None) -> int:
         "modules": selected,
     }
 
-    # Two output modes; both consume the same findings list and module tables.
+    # Output modes; all consume the same findings list and module tables.
     reporter = Reporter(no_color=args.no_color)
     if args.json:
         print(reporter.to_json(findings, metadata, tables))
+    elif args.html is not None:
+        document = reporter.to_html(findings, metadata, tables)
+        try:
+            with open(args.html, "w", encoding="utf-8") as fh:
+                fh.write(document)
+        except OSError as err:
+            print(f"error: could not write HTML report to {args.html}: {err}", file=sys.stderr)
+            return 2
+        print(f"HTML report written to {args.html}")
     else:
         print(reporter.to_console(findings, metadata, tables))
 

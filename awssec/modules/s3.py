@@ -174,7 +174,9 @@ class _S3Scanner:
     # ---- orchestration -------------------------------------------------
     def scan(self) -> ScanResult:
         """Check the account setting, then every bucket, then build the table."""
+        self.ctx.progress.update("s3: account-level Block Public Access")
         self._check_account_public_access_block()
+        self.ctx.progress.update("s3: listing buckets")
         buckets = self._list_buckets()
         if not buckets:
             # Make "nothing to scan" visible rather than an empty section.
@@ -185,7 +187,10 @@ class _S3Scanner:
                 status=Status.PASS,
                 detail="ListBuckets returned no general purpose buckets.",
             )
-        for name, region in sorted(buckets):
+        # ~7 read calls per bucket, so this is the slow part with many buckets;
+        # surface each bucket name as it is checked.
+        for i, (name, region) in enumerate(sorted(buckets), start=1):
+            self.ctx.progress.update(f"s3: {name} ({i}/{len(buckets)})")
             self._scan_bucket(name, region)
         return ScanResult(findings=self.findings, tables=[self._build_table()])
 
