@@ -3,9 +3,9 @@
 A small, **read-only** scanner for common AWS security misconfigurations. It only
 reads configuration and reports findings — it never changes your account.
 
-Coverage is organized one module per service. **IAM** and **GuardDuty** ship
-today; S3, EC2, Lambda, and access-key modules are planned and plug into the
-same reporting contract.
+Coverage is organized one module per service. **IAM**, **S3**, and
+**GuardDuty** ship today; EC2 and Lambda modules are planned and plug into
+the same reporting contract.
 
 ## Quick start
 
@@ -72,6 +72,40 @@ could make a finding moot. `NotAction` / `NotResource` aren't interpreted. The
 IAM `iam_guardduty_tamper` check flags who *can* tamper with GuardDuty; whether
 GuardDuty is actually on is covered by the GuardDuty module below.
 
+## S3 checks
+
+| check_id | Flags | Severity | Ref |
+|----------|-------|----------|-----|
+| `s3_account_public_access_block` | Account-wide Block Public Access not fully on | HIGH | CIS 2.1.4 |
+| `s3_bucket_public_access_block` | Bucket Block Public Access not fully on | HIGH | CIS 2.1.4 |
+| `s3_bucket_public_policy` | Bucket policy makes the bucket public (AWS's own `GetBucketPolicyStatus` verdict) | CRITICAL | S3.2/S3.3 |
+| `s3_bucket_public_acl` | ACL grants to AllUsers / AuthenticatedUsers | CRITICAL | S3.2/S3.3 |
+| `s3_bucket_wildcard_principal` | Policy `Allow` with `Principal:*` that isn't outright public (condition-constrained) | HIGH/MEDIUM | — |
+| `s3_bucket_tls_enforced` | No `Deny` of non-TLS requests (`aws:SecureTransport`) | MEDIUM | CIS 2.1.1 |
+| `s3_bucket_ssec_blocked` | SSE-C uploads not blocked (2025 "Codefinger" ransomware vector) | MEDIUM | — |
+| `s3_bucket_encryption` | No default encryption config (pre-2023 relic; SSE-S3 counts as a pass) | MEDIUM | — |
+| `s3_bucket_versioning` | Versioning not enabled or suspended | MEDIUM | S3.14 |
+| `s3_bucket_acls_disabled` | Legacy ACLs still enabled (Object Ownership not "bucket owner enforced") | MEDIUM | S3.12 |
+
+**How it works:** one `ListBuckets` plus ~7 read calls per bucket (policy,
+policy status, ACL, encryption, Block Public Access, versioning, ownership),
+each issued against the bucket's own region. The account-wide Block Public
+Access setting is read once via the `s3control` API.
+
+Results are rendered as a **coverage table** — buckets as rows, checks as
+columns — with `OK` / `FAIL` / `PUBLIC` / `-` / `ERR` cell tokens (the
+Encrypt column shows the default-encryption algorithm instead: `S3` / `KMS` /
+`DSSE`). The first row, `(account)`, carries the account-wide Block Public
+Access result in the BPA column. Per-bucket pass/fail findings still drive
+`--fail-on` and the JSON `findings` array.
+
+**Limitations (by design):** bucket *configuration* only — object ACLs,
+per-object encryption, and access points aren't inspected. Policy checks
+pattern-match the bucket policy document, so an SCP/RCP elsewhere could
+change the effective result (the headline "public" verdict, however, is
+AWS's own analysis, not ours). A bucket whose policy denies reads to the
+auditor shows as `ERR` cells plus one rolled-up ERROR finding.
+
 ## GuardDuty checks
 
 | check_id | Flags | Severity |
@@ -107,6 +141,7 @@ awssec/
     report.py       # console (ANSI) + JSON reporters
   modules/
     iam.py          # the IAM checks
+    s3.py           # S3 bucket security (public access, TLS, SSE-C, ...)
     guardduty.py    # GuardDuty enablement (all regions)
 ```
 

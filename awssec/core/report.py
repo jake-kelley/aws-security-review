@@ -41,7 +41,10 @@ _STATUS_COLOR = {
 # Color for the short status tokens used inside tables (see table.py).
 _TOKEN_COLOR = {
     "ON": "\033[92m",  # green  - enabled / pass
+    "OK": "\033[92m",  # green  - check passed
     "OFF": "\033[91m",  # red    - disabled / fail
+    "FAIL": "\033[91m",  # red    - check failed
+    "PUBLIC": "\033[97;41m",  # white on red - bucket is publicly accessible
     "SUSPENDED": "\033[93m",  # yellow - detector present but not monitoring
     "ERR": "\033[95m",  # magenta- could not read
     "-": _DIM,  # grey   - not applicable

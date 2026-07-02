@@ -18,10 +18,14 @@ from dataclasses import dataclass
 
 @dataclass
 class TableRow:
-    """One row: a human label, the originating check id, and one cell per column."""
+    """One row: a human label, a machine-friendly key, and one cell per column.
 
-    label: str  # e.g. "S3 Protection"
-    key: str  # the related check_id, e.g. "guardduty_s3_protection"
+    ``key`` identifies the row for downstream tooling -- a check_id when
+    rows are checks (GuardDuty), a bucket name when rows are resources (S3).
+    """
+
+    label: str  # e.g. "S3 Protection" or a bucket name
+    key: str  # e.g. "guardduty_s3_protection" or "my-bucket"
     cells: list[str]  # one token per column, in column order
 
 
@@ -45,7 +49,7 @@ class Table:
             "rows": [
                 {
                     "label": r.label,
-                    "check_id": r.key,
+                    "key": r.key,
                     "cells": dict(zip(self.columns, r.cells)),
                 }
                 for r in self.rows
