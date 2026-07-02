@@ -48,10 +48,12 @@ SERVICE = "eks"
 # Short status tokens used in the table cells (colored by the reporter).
 _ON, _OFF, _OK, _OPEN, _COND, _EOL, _ERR = "ON", "OFF", "OK", "OPEN", "COND", "EOL", "ERR"
 
-# Oldest Kubernetes minor version still in EKS standard support (point-in-time,
-# mid-2026). Clusters below this are flagged. Refresh against the EKS version
-# calendar -- this is the EKS analogue of Lambda's deprecated-runtime list.
-_MIN_SUPPORTED_K8S = (1, 30)
+# Oldest Kubernetes minor version still in EKS standard support. Clusters below
+# this are flagged. Kept in sync with the Security Hub EKS.2 control's
+# ``oldestVersionSupported`` parameter (1.33 as of mid-2026); refresh against
+# the EKS version calendar -- this is the EKS analogue of Lambda's
+# deprecated-runtime list.
+_MIN_SUPPORTED_K8S = (1, 33)
 
 # Table columns: (header, cell key). Region first as context.
 _COLUMNS = [

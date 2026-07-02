@@ -308,7 +308,7 @@ class _EcsScanner:
             ok_msg=f"networkMode is '{td.get('networkMode', 'unset')}', not host.",
             fix="Use the 'awsvpc' network mode so each task gets its own ENI and "
             "security group.",
-            refs=["Security Hub ECS.1", "Well-Architected SEC05"],
+            refs=["Security Hub ECS.17", "Well-Architected SEC05"],
         )
         self._task_finding(
             "ecs_task_host_pid", "host_pid", cells, resource, ref,
@@ -337,7 +337,7 @@ class _EcsScanner:
             bad_msg=f"Container(s) running as root (or no user set): {', '.join(as_root)}.",
             ok_msg="All containers set a non-root user.",
             fix="Set a non-root 'user' (uid or uid:gid) in each container definition.",
-            refs=["Security Hub ECS.1", "Well-Architected SEC06"],
+            refs=["Security Hub ECS.20", "Well-Architected SEC06"],
         )
         secret_detail = "; ".join(f"{name}: {', '.join(hits)}" for name, hits in plaintext.items())
         self._task_finding(

@@ -60,6 +60,17 @@ _ROW_ORDER = [("guardduty_enabled", "GuardDuty Enabled")] + [
     (check_id, label) for check_id, label, _, _ in _FEATURES
 ]
 
+# AWS Security Hub FSBP control that each check maps to (all under the
+# Well-Architected SEC04 "detection" pillar). Used to build finding references.
+_FEATURE_CONTROL = {
+    "guardduty_s3_protection": "GuardDuty.10",
+    "guardduty_runtime_monitoring": "GuardDuty.11",
+    "guardduty_eks_protection": "GuardDuty.5",
+    "guardduty_rds_protection": "GuardDuty.9",
+    "guardduty_lambda_protection": "GuardDuty.6",
+}
+_ENABLED_REFERENCES = ["Security Hub GuardDuty.1", "Well-Architected SEC04"]
+
 
 def run(ctx: ScanContext) -> ScanResult:
     """Entry point called by the CLI. Returns findings plus the coverage table."""
@@ -141,7 +152,7 @@ class _GuardDutyScanner:
                 resource=region,
                 detail=f"No GuardDuty detector exists in {region}; threat detection is off here.",
                 recommendation=f"Enable GuardDuty in {region} (ideally in every region).",
-                references=["CIS AWS Foundations Benchmark 3.x (GuardDuty)"],
+                references=_ENABLED_REFERENCES,
             )
             return
 
@@ -167,7 +178,7 @@ class _GuardDutyScanner:
                 detail=f"A GuardDuty detector exists in {region} but its status is "
                 f"'{detector.get('Status')}', so it is not actively monitoring.",
                 recommendation=f"Re-enable the GuardDuty detector in {region}.",
-                references=["CIS AWS Foundations Benchmark 3.x (GuardDuty)"],
+                references=_ENABLED_REFERENCES,
             )
             return
 
@@ -180,6 +191,7 @@ class _GuardDutyScanner:
             status=Status.PASS,
             resource=region,
             detail=f"GuardDuty detector is ENABLED in {region} ({detector_id}).",
+            references=_ENABLED_REFERENCES,
         )
 
         feature_status = {f["Name"]: f.get("Status") for f in detector.get("Features", [])}
@@ -211,7 +223,7 @@ class _GuardDutyScanner:
             resource=region,
             detail=f"{label} ({feature_name}) is {status} in {region}.",
             recommendation="" if enabled else f"Enable {label} on the GuardDuty detector in {region}.",
-            references=["GuardDuty protection features"],
+            references=[f"Security Hub {_FEATURE_CONTROL[check_id]}", "Well-Architected SEC04"],
         )
 
     def _region_error(self, region: str, cells: dict, message: str) -> None:
